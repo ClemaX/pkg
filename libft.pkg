@@ -1,0 +1,15 @@
+name="libft"
+version="1.0"
+
+sources=("https://github.com/ClemaX/libft.git:master")
+
+prepare()
+{
+	echo "Preparing build..."
+}
+
+build()
+{
+	echo "Running build, DESTDIR=$DESTDIR"
+	make -C libft-master
+}
