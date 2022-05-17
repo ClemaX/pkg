@@ -17,9 +17,10 @@ print_usage()
 
 Where action is one of:
 	build:      Build a package and output an installable archive.
-	install:    Build and install a package to it's final destination.
+	install:    Install a package's files to their final destination.
+	uninstall:	Uninstall a package's files.
 	list:       List installed packages.
-	list-files: List files owned by installed packages.
+	files:		List files owned by installed packages.
 	help:       Print this help message." >&2
 }
 
@@ -334,7 +335,7 @@ pkg_installed() # [pkg]...
 
 	while [ "$#" -gt 0 ]
 	do
-		pkg="$1"; shift
+		pkg="${1%.pkg}"; shift
 
 		[ -f "$PKG_DATA/$pkg/files" ] || return
 	done
@@ -342,14 +343,14 @@ pkg_installed() # [pkg]...
 
 pkg_files() # pkg
 {
-	local pkg="$1"
+	local pkg="${1%.pkg}"
 
 	grep "$PKG_DATA/$pkg/files" -e '[^/]$'
 }
 
 pkg_dirs() # pkg
 {
-	local pkg="$1"
+	local pkg="${1%.pkg}"
 
 	grep "$PKG_DATA/$pkg/files" -v -e '[^/]$'
 }
@@ -358,13 +359,14 @@ pkg_uninstall() # [pkg]...
 {
 	[ "$#" -lt 1 ] && echo "uninstall needs at least one target!" >&2 && false
 
-	local data_dir="$PKG_DATA/$pkg"
+	local data_dir
 	local pkg
 	local pkg_files
 
 	while [ "$#" -gt 0 ]
 	do
-		pkg="$1"; shift
+		pkg="${1%.pkg}"; shift
+		data_dir="$PKG_DATA/$pkg"
 		pkg_files="$data_dir/files"
 
 		if [ -f "$pkg_files" ]
@@ -380,6 +382,8 @@ pkg_uninstall() # [pkg]...
 				rmdir --ignore-fail-on-non-empty
 
 			rm "$pkg_files"
+
+			echo "Uninstalled $pkg!"
 		else
 			echo "warning: $pkg is not installed"
 		fi
@@ -396,7 +400,7 @@ pkg_install() # [pkg]...
 
 	while [ "$#" -gt 0 ]
 	do
-		pkg="$1"; shift
+		pkg="${1%.pkg}"; shift
 		cache_dir="$PKG_CACHE/$pkg"
 		data_dir="$PKG_DATA/$pkg"
 
@@ -449,8 +453,9 @@ action="${1:-}"
 case "$action" in
 	build)		pkg_build "$@";;
 	install)	pkg_install "$@";;
+	uninstall)	pkg_uninstall "$@";;
 	list)		pkg_list;;
-	list-files)	pkg_list_files "$@";;
+	files)		pkg_list_files "$@";;
 	help)		print_usage;;
 	*)			print_usage; exit 1;;
 esac
