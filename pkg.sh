@@ -435,7 +435,7 @@ pkg_list()
 
 pkg_list_files() # [pkg]...
 {
-	[ "$#" -lt 1 ] && echo "list-files needs at least one target!" >&2 && return 1
+	[ "$#" -lt 1 ] && echo "files needs at least one target!" >&2 && return 1
 
 	local pkg
 
