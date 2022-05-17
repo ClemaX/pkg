@@ -4,8 +4,10 @@ set -euo pipefail
 
 SKIP_TESTS="${SKIP_TESTS:-false}"
 
-PKG_DATA="$PWD/fake/var/lib/pkg"
-PKG_CACHE="$PWD/fake/var/cache/pkg"
+ROOT="$PWD/fake"
+
+PKG_DATA="$ROOT/var/lib/pkg"
+PKG_CACHE="$ROOT/var/cache/pkg"
 
 PKG_TMP="/tmp"
 
@@ -128,6 +130,7 @@ pkg_src_fetch_http()
 	name=$(basename "$url")
 	curl --output "$name" "$url"
 
+	# shellcheck disable=SC2034
 	name_dst="$name"
 }
 
@@ -160,29 +163,55 @@ pkg_src_check() # src_name expected_sum
 	[ "$actual_sum" != "$expected_sum" ] && false
 }
 
-pkg_build() # [pkg]...
+pkg_archive() # archive_path build_dir
 {
-	[ "$#" -lt 1 ] && echo "build needs at least one target!" >&2 && false
+	local archive_path="$1"
+	local build_dir="$2"
 
-	pkg_init
+	pushd "$build_dir"
+		tar cf "$archive_path" .
+	popd
 
-	local pkg_file="$1"; shift
-	local build_dir cache_dir
+	md5sum "$archive_path" > "$archive_path.md5"
+}
 
-	pkg_file=$(basename "$pkg_file" .pkg).pkg
+pkg_extract() # archive_path install_dir
+{
+	local archive_path="$1"
+	local install_dir="$2"
 
-	local sources md5sums
-	local name version
+	md5sum --check "$archive_path.md5"
+
+	pushd "$install_dir"
+		tar xf "$archive_path" .
+	popd
+}
+
+pkg_archive_files() # archive_path [root]
+{
+	local archive_path="$1"
+	local root="${2-}/"
+
+	tar -tf "$archive_path" | sed -e "s|^./|$root|g" -e '/^$/d'
+}
+
+pkg_load() # pkg_file
+{
+	local pkg_file="$1"
+
+	sources=() md5sums=()
+	name='' version=''
 
 	# shellcheck source=/dev/null
 	source "$pkg_file"
 
 	pkg_assert_var "$pkg_file" name version
 	pkg_assert_fun "$pkg_file" build
+}
 
-	# shellcheck disable=SC2154
-	build_dir=$(mktemp -d "$PKG_TMP/$name-$version.XXXX.build")
-	cache_dir="$PKG_CACHE/$name/$version"
+pkg_prepare() # cache_dir
+{
+	local cache_dir="$1"
 
 	mkdir -p "$cache_dir"
 	pushd "$cache_dir"
@@ -196,7 +225,14 @@ pkg_build() # [pkg]...
 
 			while [ "$i" -lt "${#sources[@]}" ]
 			do
-				pkg_src_fetch "${sources[$i]}" src_file
+				src_file=$(basename "${sources[$i]}")
+
+				if [ "$i" -ge "${#md5sums[@]}" ] || ! [ -f "$src_file" ] \
+				|| pkg_src_check "$src_file" "${md5sums[$i]}"
+				then
+					pkg_src_fetch "${sources[$i]}" src_file
+				fi
+
 				[ "$i" -lt "${#md5sums[@]}" ] && pkg_src_check "$src_file" "${md5sums[$i]}"
 				((i += 1))
 			done
@@ -204,43 +240,200 @@ pkg_build() # [pkg]...
 		if pkg_assert_fun prepare
 		then
 			echo "Preparing $pkg_file..."
-			prepare
-			unset -f prepare
+			prepare; unset -f prepare
 		fi
 	popd
+}
 
-	pushd "$build_dir"
-		export DESTDIR="$build_dir"
-		# TODO: Make some constants read-only
+pkg_build() # [pkg]...
+{
+	[ "$#" -lt 1 ] && echo "build needs at least one target!" >&2 && false
 
-		if [ -d "$cache_dir" ]
+	local pkg_file
+	local src_dir build_dir cache_dir
+	local pkg_archive
+
+	local sources md5sums
+	local name version
+
+	pkg_init
+
+	while [ "$#" -gt 0 ]
+	do
+		pkg_file="$1"; shift
+		pkg_file=$(basename "$pkg_file" .pkg).pkg
+
+		echo "Loading $pkg_file..."
+		pkg_load "$pkg_file"
+
+		src_dir=$(mktemp -d "$PKG_TMP/$name-$version.XXXX.source")
+		build_dir=$(mktemp -d "$PKG_TMP/$name-$version.XXXX.build")
+		cache_dir="$PKG_CACHE/$name/$version"
+
+		pkg_archive="$cache_dir/pkg.tar.xf"
+
+		if [ -f "$pkg_archive" ]
 		then
-			echo "Initializing build directory..."
-			cp -a "$cache_dir/." .
-		else
-			echo "No $cache_dir"
+			if md5sum --check "$pkg_archive.md5"
+			then
+				echo "$name has already been built!"
+
+				ln -sf "$pkg_archive" "$cache_dir/../pkg.tar.xf"
+				ln -sf "$pkg_archive.md5" "$cache_dir/../pkg.tar.xf.md5"
+
+				continue
+			else
+				echo "warning: removing corrupt archive $pkg_archive!"
+				rm "$pkg_archive"
+			fi
 		fi
 
-		echo "Building $pkg_file..."
-		build
+		pkg_prepare "$cache_dir"
 
-		unset -f build
-	popd
+		pushd "$build_dir"
+			if [ -d "$cache_dir" ]
+			then
+				echo "Initializing source directory..."
+				cp -a "$cache_dir/." "$src_dir"
+			fi
+
+			echo "Building $pkg_file..."
+
+			export DESTDIR="$build_dir" SRCDIR="$src_dir"
+			export USRLIBDIR="/usr/lib" USRBINDIR="/usr/bin"
+			# TODO: Make some constants read-only
+
+			build; unset -f build
+
+			if [ -d "$src_dir" ]
+			then
+				echo "Removing source directory..."
+				rm -rf "$src_dir"
+			fi
+
+		popd
+
+		echo "Packaging $pkg_file..."
+		pkg_archive "$pkg_archive" "$build_dir"
+
+		ln -sf "$pkg_archive" "$cache_dir/../pkg.tar.xf"
+		ln -sf "$pkg_archive.md5" "$cache_dir/../pkg.tar.xf.md5"
+	done
+}
+
+pkg_installed() # [pkg]...
+{
+	local pkg
+
+	while [ "$#" -gt 0 ]
+	do
+		pkg="$1"; shift
+
+		[ -f "$PKG_DATA/$pkg/files" ] || return
+	done
+}
+
+pkg_files() # pkg
+{
+	local pkg="$1"
+
+	grep "$PKG_DATA/$pkg/files" -e '[^/]$'
+}
+
+pkg_dirs() # pkg
+{
+	local pkg="$1"
+
+	grep "$PKG_DATA/$pkg/files" -v -e '[^/]$'
+}
+
+pkg_uninstall() # [pkg]...
+{
+	[ "$#" -lt 1 ] && echo "uninstall needs at least one target!" >&2 && false
+
+	local data_dir="$PKG_DATA/$pkg"
+	local pkg
+	local pkg_files
+
+	while [ "$#" -gt 0 ]
+	do
+		pkg="$1"; shift
+		pkg_files="$data_dir/files"
+
+		if [ -f "$pkg_files" ]
+		then
+			echo "Uninstalling $pkg..."
+
+			pkg_files "$pkg" \
+			| xargs --delimiter=$'\n' \
+				rm -f
+
+			pkg_dirs "$pkg" \
+			| xargs --delimiter=$'\n' \
+				rmdir --ignore-fail-on-non-empty
+
+			rm "$pkg_files"
+		else
+			echo "warning: $pkg is not installed"
+		fi
+	done
 }
 
 pkg_install() # [pkg]...
 {
 	[ "$#" -lt 1 ] && echo "install needs at least one target!" >&2 && false
+
+	local pkg
+	local cache_dir data_dir
+	local pkg_archive
+
+	while [ "$#" -gt 0 ]
+	do
+		pkg="$1"; shift
+		cache_dir="$PKG_CACHE/$pkg"
+		data_dir="$PKG_DATA/$pkg"
+
+		! pkg_installed "$pkg" || pkg_uninstall "$pkg"
+		pkg_archive="$cache_dir/pkg.tar.xf"
+
+		if ! [ -f "$pkg_archive" ]
+		then
+			echo "$pkg has not been built!" >&2
+			return 1
+		fi
+
+		pkg_extract "$pkg_archive" "$ROOT"
+
+		mkdir -p "$data_dir"
+		pkg_archive_files "$pkg_archive" "$ROOT" > "$data_dir/files"
+	done
 }
 
 pkg_list()
 {
-	true	
+	local data_dir
+
+	for data_dir in "$PKG_DATA/"*
+	do
+		if [ -f "$data_dir/files" ]
+		then
+			basename "$data_dir"
+		fi
+	done
 }
 
 pkg_list_files() # [pkg]...
 {
-	[ "$#" -lt 1 ] && echo "list-files needs at least one target!" >&2 && false
+	[ "$#" -lt 1 ] && echo "list-files needs at least one target!" >&2 && return 1
+
+	local pkg
+
+	while [ "$#" -gt 0 ]
+	do
+		pkg="$1"; shift
+
+		pkg_files "$pkg"
+	done
 }
 
 action="${1:-}"; shift
@@ -248,8 +441,8 @@ action="${1:-}"; shift
 case "$action" in
 	build)		pkg_build "$@";;
 	install)	pkg_install "$@";;
-	list)		pkg_list "$@";;
-	list_files)	pkg_list_files "$@";;
+	list)		pkg_list;;
+	list-files)	pkg_list_files "$@";;
 	help)		print_usage;;
 
 	*)			print_usage; exit 1;;
