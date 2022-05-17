@@ -4,7 +4,7 @@ set -euo pipefail
 
 SKIP_TESTS="${SKIP_TESTS:-false}"
 
-ROOT="$PWD/fake"
+ROOT="${ROOT:-$PWD/fake}"
 
 PKG_DATA="$ROOT/var/lib/pkg"
 PKG_CACHE="$ROOT/var/cache/pkg"
@@ -128,7 +128,7 @@ pkg_src_fetch_http()
 	declare -n name_dst="$2"
 
 	name=$(basename "$url")
-	curl --output "$name" "$url"
+	curl --location --output "$name" "$url"
 
 	# shellcheck disable=SC2034
 	name_dst="$name"
@@ -145,8 +145,19 @@ pkg_src_fetch() # [url]...
 	if [[ "$url" =~ ^[^:]+://[^:]+\.git:.* ]]
 	then
 		pkg_src_fetch_git "$url" src_name
-	else
+	elif [[ "$url" =~ ^[^:]+://[^:]+.* ]]
+	then
 		pkg_src_fetch_http "$url" src_name
+	else
+		src_name=$(basename "$url")
+
+		cp -a "$ROOT/$url" "$src_name"
+	fi
+
+	if [[ "$src_name" =~ .*\.tar.* ]]
+	then
+		echo "Extracting $src_name..."
+		tar xf "$src_name"
 	fi
 
 	echo "Fetched $src_name!"
@@ -160,7 +171,7 @@ pkg_src_check() # src_name expected_sum
 
 	actual_sum=$(md5sum "$src_name" | cut -d ' ' -f 1)
 
-	[ "$actual_sum" != "$expected_sum" ] && false
+	[ "$actual_sum" == "$expected_sum" ] || return
 }
 
 pkg_archive() # archive_path build_dir
@@ -183,7 +194,7 @@ pkg_extract() # archive_path install_dir
 	md5sum --check "$archive_path.md5"
 
 	pushd "$install_dir"
-		tar xf "$archive_path" .
+		tar xf "$archive_path"
 	popd
 }
 
@@ -237,7 +248,7 @@ pkg_prepare() # cache_dir
 				((i += 1))
 			done
 		fi
-		if pkg_assert_fun prepare
+		if pkg_has_fun prepare
 		then
 			echo "Preparing $pkg_file..."
 			prepare; unset -f prepare
@@ -291,11 +302,8 @@ pkg_build() # [pkg]...
 		pkg_prepare "$cache_dir"
 
 		pushd "$build_dir"
-			if [ -d "$cache_dir" ]
-			then
-				echo "Initializing source directory..."
-				cp -a "$cache_dir/." "$src_dir"
-			fi
+			echo "Initializing source directory..."
+			cp -a "$cache_dir/." "$src_dir"
 
 			echo "Building $pkg_file..."
 
@@ -436,7 +444,8 @@ pkg_list_files() # [pkg]...
 	done
 }
 
-action="${1:-}"; shift
+action="${1:-}"
+[ $# -gt 0 ] && shift
 
 case "$action" in
 	build)		pkg_build "$@";;
@@ -444,6 +453,5 @@ case "$action" in
 	list)		pkg_list;;
 	list-files)	pkg_list_files "$@";;
 	help)		print_usage;;
-
 	*)			print_usage; exit 1;;
 esac
