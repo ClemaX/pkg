@@ -1,0 +1,15 @@
+# vim: filetype=sh
+# shellcheck shell=bash
+# shellcheck disable=SC2034
+
+name="pkg"
+version="0.1"
+
+tag="v$version"
+sources=("https://github.com/ClemaX/$name.git:$tag")
+
+build()
+{
+	install -d "./var/lib/pkg" "./var/cache/pkg"
+	install -Dm 755 "$SRCDIR/$name/pkg.sh" "./$USRBINDIR/pkg"
+}
