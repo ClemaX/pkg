@@ -441,9 +441,15 @@ pkg_list_files() # [pkg]...
 
 	while [ "$#" -gt 0 ]
 	do
-		pkg="$1"; shift
+		pkg="${1%.pkg}"; shift
 
-		pkg_files "$pkg"
+		if pkg_installed "$pkg"
+		then
+			pkg_files "$pkg"
+		else
+			echo "$pkg is not installed!" >&2
+			return 1
+		fi
 	done
 }
 
