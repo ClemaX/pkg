@@ -271,8 +271,7 @@ pkg_build() # [pkg]...
 
 	while [ "$#" -gt 0 ]
 	do
-		pkg_file="$1"; shift
-		pkg_file=$(basename "$pkg_file" .pkg).pkg
+		pkg_file="${1%.pkg}.pkg"; shift
 
 		echo "Loading $pkg_file..."
 		pkg_load "$pkg_file"
