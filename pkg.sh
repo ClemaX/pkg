@@ -229,6 +229,7 @@ pkg_prepare() # cache_dir
 	pushd "$cache_dir"
 		if pkg_has_var sources
 		then
+			# TODO: Resolve sources to relative urls
 			pkg_has_var md5sums || md5sums=()
 
 			local i=0
@@ -245,7 +246,12 @@ pkg_prepare() # cache_dir
 					pkg_src_fetch "${sources[$i]}" src_file
 				fi
 
-				[ "$i" -lt "${#md5sums[@]}" ] && pkg_src_check "$src_file" "${md5sums[$i]}"
+				if [ "$i" -lt "${#md5sums[@]}" ] && ! pkg_src_check "$src_file" "${md5sums[$i]}"
+				then
+					echo "$src_file: File does not match md5sum!"
+					return 1
+				fi
+
 				((i += 1))
 			done
 		fi
@@ -299,15 +305,17 @@ pkg_build() # [pkg]...
 			fi
 		fi
 
+		echo "Initializing source directory..."
+		cp -a "$cache_dir/." "$src_dir"
+
+		export SRCDIR="$src_dir"
+
 		pkg_prepare "$cache_dir"
 
 		pushd "$build_dir"
-			echo "Initializing source directory..."
-			cp -a "$cache_dir/." "$src_dir"
-
 			echo "Building $pkg_file..."
 
-			export DESTDIR="$build_dir" SRCDIR="$src_dir"
+			export DESTDIR="$build_dir"
 			export USRLIBDIR="/usr/lib" USRBINDIR="/usr/bin"
 			# TODO: Make some constants read-only
 
@@ -318,7 +326,6 @@ pkg_build() # [pkg]...
 				echo "Removing source directory..."
 				rm -rf "$src_dir"
 			fi
-
 		popd
 
 		echo "Packaging $pkg_file..."
