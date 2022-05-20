@@ -243,7 +243,7 @@ pkg_extract() # archive_path install_dir
 	local archive_path="$1"
 	local install_dir="$2"
 
-	md5sum --check "$archive_path.md5"
+	md5sum --quiet --check "$archive_path.md5"
 
 	pushd "$install_dir"
 		tar "$TAR_PKG_XFLAGS" "$archive_path"
@@ -468,7 +468,7 @@ pkg_built() # [pkg]...
 
 		if [ -f "$pkg_archive" ]
 		then
-			if ! md5sum --check "$pkg_archive.md5"
+			if ! md5sum --quiet --check "$pkg_archive.md5"
 			then
 				echo "warning: removing corrupt archive $pkg_archive!"
 				rm "$pkg_archive"
