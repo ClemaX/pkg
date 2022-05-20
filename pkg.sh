@@ -59,13 +59,6 @@ pkg_init()
 	mkdir -p "$PKG_CACHE"
 }
 
-pkg_installed() # name
-{
-	local name="$1"
-
-	[ -d "$PKG_DATA/$name" ] || return 1
-}
-
 pkg_has_var() # [name]...
 {
 	until [ $# -eq 0 ]
@@ -493,7 +486,7 @@ pkg_assert_installed() # pkg
 
 	for pkg in "$@"
 	do
-		pkg_installed "$pkg" || fatal "$pkg has is not installed!"
+		pkg_installed "$pkg" || fatal "$pkg is not installed!"
 	done
 }
 
@@ -619,7 +612,7 @@ pkg_list_files() # [pkg]...
 	do
 		pkg="${pkg%.pkg}"; shift
 
-		pkg_installed "$pkg" || echo "$pkg is not installed!" 
+		pkg_assert_installed "$pkg"
 
 		pkg_files "$pkg"
 	done
