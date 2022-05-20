@@ -188,31 +188,31 @@ pkg_src_fetch_http() # url name_dst
 pkg_src_fetch() # url name_dst
 {
 	local url="$1"
-	local name_dst
+	local name
 
-	declare -n name_dst="$2"
+	declare -n name="$2"
 
 	echo "Fetching $url..."
 
 	# Fetch git repo or http file.
 	if [[ "$url" =~ ^[^:]+://[^:]+\.git:.* ]]
 	then
-		pkg_src_fetch_git "$url" name_dst
+		pkg_src_fetch_git "$url" name
 	elif [[ "$url" =~ ^[^:]+://[^:]+.* ]]
 	then
-		pkg_src_fetch_http "$url" name_dst
+		pkg_src_fetch_http "$url" name
 	else
-		name_dst="${url##*/}"
+		name="${url##*/}"
 
 		if [ "$url" != "${url#/}" ]
 		then
-			cp -av "$ROOT/$url" "$name_dst"
+			cp -av "$ROOT/$url" "$name"
 		else
-			cp -av "$PKGDIR/$url" "$name_dst"
+			cp -av "$PKGDIR/$url" "$name"
 		fi
 	fi
 
-	echo "$url -> $name_dst"
+	echo "$url -> $name"
 }
 
 pkg_src_check() # src_name expected_sum
@@ -267,10 +267,11 @@ pkg_load() # pkg_file
 	then
 		pkg_dir="$PWD/${pkg_file%/}"
 		pkg_file="${pkg_dir##*/}.pkg"
-
-		echo "$pkg_dir, $pkg_file"
 	else
-		pkg_dir="$PWD/$(dirname "$pkg_file")"
+		[ "$pkg_file" != "${pkg_file#/}" ] \
+		&& pkg_dir="$(dirname "$pkg_file")" \
+		|| pkg_dir="$PWD/$(dirname "$pkg_file")" \
+		
 		pkg_file="${pkg_file##*/}"
 		pkg_file="${pkg_file%.pkg}.pkg"
 
@@ -317,7 +318,6 @@ pkg_prepare() # src_dir
 	pushd "$cache_dir"
 		if pkg_has_var sources
 		then
-			# TODO: Resolve sources to relative urls
 			pkg_has_var md5sums || md5sums=()
 
 			local i=0
