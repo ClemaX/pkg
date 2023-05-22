@@ -2,15 +2,25 @@
 
 set -euo pipefail
 
+# Processor core count
 NPROC=$(nproc || echo 1)
 
-export SKIP_TESTS="${SKIP_TESTS:-false}"
-export MAKEFLAGS="-j$NPROC"
+# Pager command to show error logs when running interactively
+PAGER=$(command -v less || command -v more || command -v tail || command -v cat || :)
 
+# Skip test-suites when available
+export SKIP_TESTS="${SKIP_TESTS:-false}"
+# Makefile flags: Run as many tasks as there are processor cores
+export MAKEFLAGS="${MAKEFLAGS:--j$NPROC}"
+# xz options: -T N: Use N threads, -N: Compression preset
+export XZ_OPT="${XZ_OPT:--T${NPROC:-0} -6}"
+
+# Temporary variables for build script interaction
 PKG_VARS=(pkg_dir pkg_file name version sources md5sums cache_dir data_dir)
 
+# Temporary interface functions
 PKG_BUILD_FUNS=(prepare build)
-PKG_INSTALL_FUNS=(pre_isntall post_install)
+PKG_INSTALL_FUNS=(pre_install post_install)
 PKG_UNINSTALL_FUNS=(pre_uninstall post_uninstall)
 PKG_FUNS=(
 	"${PKG_BUILD_FUNS[@]}"
@@ -18,20 +28,31 @@ PKG_FUNS=(
 	"${PKG_UNINSTALL_FUNS[@]}"
 )
 
-ROOT="${ROOT:-$PWD/fake}"
+# Target root directory
+ROOT="${ROOT:-/}"
 
+# Package management database directory
 PKG_DATA="$ROOT/var/lib/pkg"
+# Package cache directory
 PKG_CACHE="$ROOT/var/cache/pkg"
 
+# Temporary build directory
 PKG_TMP="/tmp"
 
-TAR_XFLAGS=xf
+# tar extraction parameters: x: Extract
+TAR_XFLAGS=(-x)
+# tar compression parameters: c: Compress, J: Filter the archive through xz
+TAR_CFLAGS=(-cJ)
 
-TAR_PKG_CFLAGS=cJf
-TAR_PKG_XFLAGS="$TAR_XFLAGS"
+# Package extension
 TAR_PKG_EXT=.tar.xz
 
-TAR_SRC_XFLAGS="$TAR_XFLAGS"
+# Package flags
+TAR_PKG_CFLAGS=("${TAR_CFLAGS[@]}")
+TAR_PKG_XFLAGS=("${TAR_XFLAGS[@]}" --keep-directory-symlink --no-overwrite-dir)
+
+# Source flags
+TAR_SRC_XFLAGS=("${TAR_XFLAGS[@]}" --no-same-owner)
 
 
 fatal() # [msg]...
@@ -53,12 +74,14 @@ Where action is one of:
 	help:       Print this help message." >&2
 }
 
+# Create runtime directories
 pkg_init()
 {
-	mkdir -p "$PKG_DATA"
-	mkdir -p "$PKG_CACHE"
+	mkdir -vp "$PKG_DATA"
+	mkdir -vp "$PKG_CACHE"
 }
 
+# Check if given variables have been set
 pkg_has_var() # [name]...
 {
 	until [ $# -eq 0 ]
@@ -69,6 +92,7 @@ pkg_has_var() # [name]...
 	done
 }
 
+# Check if given functions have been defined
 pkg_has_fun() # [name]...
 {
 	while [ $# -gt 0 ]
@@ -79,6 +103,7 @@ pkg_has_fun() # [name]...
 	done
 }
 
+# Assert that given variables have been set
 pkg_assert_var() # pkg_file [name]...
 {
 	local pkg_file="$1"; shift
@@ -95,6 +120,7 @@ pkg_assert_var() # pkg_file [name]...
 	done
 }
 
+# Assert that given functions have been defined
 pkg_assert_fun() # pkg_file [name]...
 {
 	local pkg_file="$1"; shift
@@ -105,12 +131,12 @@ pkg_assert_fun() # pkg_file [name]...
 
 		if ! pkg_has_fun "$name"
 		then
-			echo "$pkg_file: Package needs a $name function!" >&2
-			return 1
+			fatal "$pkg_file: Package needs a $name function!"
 		fi
 	done
 }
 
+# Run a given function
 pkg_run() # pkg_fun
 {
 	local log
@@ -123,12 +149,17 @@ pkg_run() # pkg_fun
 
 			echo "Running $pkg_fun..."
 
-			if "$pkg_fun" > "$log" 2>&1
+			set +e
+				(set -eu; "$pkg_fun") > "$log" 2>&1
+				err="$?"
+			set -e
+
+			if  [ "$err" -eq 0 ]
 			then
 				rm "$log"
 			else
-				echo "Could not run $pkg_fun! See $log for more details." >&2
-				return 1
+				[ -t 1 ] && [ -n "$PAGER" ] && "$PAGER" "$log"
+				fatal "Could not run $pkg_fun! See $log for more details."
 			fi
 
 			unset -f "$pkg_fun"
@@ -136,8 +167,8 @@ pkg_run() # pkg_fun
 	done
 }
 
-# Fetch an archive at "proto://repo:branch" and create a tar archive and a
-# md5 hash.
+# Fetch a repo at "url" as "proto://repo:ref", create a tar archive and an
+# md5 sum and store it's name in a variable named "name_dst".
 pkg_src_fetch_git() # url name_dst
 {
 	local url="$1"
@@ -149,18 +180,27 @@ pkg_src_fetch_git() # url name_dst
 	then
 		local proto="${BASH_REMATCH[1]}"
 		local repo="${BASH_REMATCH[2]}"
-		local branch="${BASH_REMATCH[3]}"
+		local ref="${BASH_REMATCH[3]}"
 
-		name="$(basename "$repo" .git)-$branch"
+		name="$(basename "$repo" .git)-$ref"
 
 		if [ -d "$name/.git" ]
 		then
 			pushd "$name"
-				git fetch --depth 1 origin "$branch"
+				git fetch --depth 1 origin "$ref"
+				git checkout FETCH_HEAD
+				git submodule update --init --recursive --depth 1
 			popd
 		else
-			git clone --depth 1 --single-branch \
-				--branch "$branch" "$proto://$repo" "$name"
+			mkdir -vp "$name"
+			pushd "$name"
+				git init
+				git remote add origin "$proto://$repo"
+
+				git fetch --depth 1 origin "$ref"
+				git checkout FETCH_HEAD
+				git submodule update --init --recursive --depth 1
+			popd
 		fi
 		name_dst="$name"
 
@@ -170,6 +210,8 @@ pkg_src_fetch_git() # url name_dst
 	fi
 }
 
+# Fetch a file using HTTP at "url" and store it's name in a variable named
+# "name_dst".
 pkg_src_fetch_http() # url name_dst
 {
 	local url="$1"
@@ -185,6 +227,7 @@ pkg_src_fetch_http() # url name_dst
 	name_dst="$name"
 }
 
+# Fetch a file at "url" and store it's name in a variable named "name_dst".
 pkg_src_fetch() # url name_dst
 {
 	local url="$1"
@@ -194,27 +237,30 @@ pkg_src_fetch() # url name_dst
 
 	echo "Fetching $url..."
 
-	# Fetch git repo or http file.
 	if [[ "$url" =~ ^[^:]+://[^:]+\.git:.* ]]
 	then
+		# Fetch git repo.
 		pkg_src_fetch_git "$url" name
 	elif [[ "$url" =~ ^[^:]+://[^:]+.* ]]
 	then
+		# Fetch http file.
 		pkg_src_fetch_http "$url" name
 	else
+		# Fetch local file.
 		name="${url##*/}"
 
 		if [ "$url" != "${url#/}" ]
 		then
-			cp -av "$ROOT/$url" "$name"
+			cp -av --no-preserve=ownership "$ROOT/$url" "$name"
 		else
-			cp -av "$PKGDIR/$url" "$name"
+			cp -av --no-preserve=ownership "$PKGDIR/$url" "$name"
 		fi
 	fi
 
 	echo "$url -> $name"
 }
 
+# Check "src_name" integrity given an md5 "expected_sum"
 pkg_src_check() # src_name expected_sum
 {
 	local src_name="$1"
@@ -226,18 +272,22 @@ pkg_src_check() # src_name expected_sum
 	[ "$actual_sum" == "$expected_sum" ] || return 1
 }
 
+# Archive a package's "build_dir" to "archive_path" and store it's md5 sum to
+# "archive_path".md5
 pkg_archive() # archive_path build_dir
 {
 	local archive_path="$1"
 	local build_dir="$2"
 
 	pushd "$build_dir"
-		tar "$TAR_PKG_CFLAGS" "$archive_path" .
+		tar "${TAR_PKG_CFLAGS[@]}" -f "$archive_path" .
 	popd
 
 	md5sum "$archive_path" > "$archive_path.md5"
 }
 
+# Extract a package at "archive_path" to "install_dir" after checking the md5
+# sum at "archive_path".md5
 pkg_extract() # archive_path install_dir
 {
 	local archive_path="$1"
@@ -246,10 +296,11 @@ pkg_extract() # archive_path install_dir
 	md5sum --quiet --check "$archive_path.md5"
 
 	pushd "$install_dir"
-		tar "$TAR_PKG_XFLAGS" "$archive_path"
+		tar "${TAR_PKG_XFLAGS[@]}" -f "$archive_path"
 	popd
 }
 
+# List the files in "archive_path" rebased onto "root" or '/' by default
 pkg_archive_files() # archive_path [root]
 {
 	local archive_path="$1"
@@ -258,7 +309,9 @@ pkg_archive_files() # archive_path [root]
 	tar -tf "$archive_path" | sed -e "s|^./|$root|g" -e '/^$/d'
 }
 
-# assigns pkg_dir pkg_file name version sources md5sums cache_dir data_dir
+# Load a package script
+#
+# Assigns pkg_dir pkg_file name version sources md5sums cache_dir data_dir
 pkg_load() # pkg_file
 {
 	pkg_file="$1"
@@ -271,7 +324,7 @@ pkg_load() # pkg_file
 		[ "$pkg_file" != "${pkg_file#/}" ] \
 		&& pkg_dir="$(dirname "$pkg_file")" \
 		|| pkg_dir="$PWD/$(dirname "$pkg_file")" \
-		
+
 		pkg_file="${pkg_file##*/}"
 		pkg_file="${pkg_file%.pkg}.pkg"
 
@@ -279,7 +332,6 @@ pkg_load() # pkg_file
 		&& [ -f "$PKG_DATA/${pkg_file%.pkg}/$pkg_file" ]
 		then
 			pkg_dir="$PKG_DATA/${pkg_file%.pkg}"
-			echo "Using previously built $pkg_file,,,"
 		fi
 	fi
 
@@ -298,6 +350,7 @@ pkg_load() # pkg_file
 	data_dir="$PKG_DATA/$name/$version"
 }
 
+# Unloads a package script
 pkg_unload()
 {
 	unset "${PKG_VARS[@]}"
@@ -305,16 +358,18 @@ pkg_unload()
 	unset -f "${PKG_FUNS[@]}" 2>/dev/null || :
 }
 
+# Prepare a package for building
 pkg_prepare() # src_dir
 {
 	local src_dir="$1"
+	local src dst
 
 	echo "Preparing $name..."
 
 	export SRCDIR="$src_dir"
 	export PKGDIR="$pkg_dir"
 
-	mkdir -p "$cache_dir"
+	mkdir -vp "$cache_dir"
 	pushd "$cache_dir"
 		if pkg_has_var sources
 		then
@@ -326,12 +381,14 @@ pkg_prepare() # src_dir
 
 			while [ "$i" -lt "${#sources[@]}" ]
 			do
-				src_file=$(basename "${sources[$i]}")
+				src="${sources[$i]}"
+				src_file=$(basename "$src")
 
-				if [ "$i" -ge "${#md5sums[@]}" ] || ! [ -f "$src_file" ] \
+				if [ "$i" -ge "${#md5sums[@]}" ] \
+				|| ! [ -f "$src_file" ] \
 				|| pkg_src_check "$src_file" "${md5sums[$i]}"
 				then
-					pkg_src_fetch "${sources[$i]}" src_file
+					pkg_src_fetch "$src" src_file
 				fi
 
 				if [ "$i" -lt "${#md5sums[@]}" ] \
@@ -340,39 +397,48 @@ pkg_prepare() # src_dir
 					fatal "$src_file: File does not match md5sum!"
 				fi
 
-				sources[$i]="$src_file"
+				sources[i]="$src_file"
 
 				((i += 1))
 			done
 		fi
 
-		echo "Initializing source directory..."
+		echo "Copying cached sources to $src_dir..."
+		mkdir -vp "$src_dir"
 
-		if [ -d "$cache_dir" ]
-		then
-			echo "Copying cached sources to $src_dir..."
-			cp -a "$cache_dir/." "$src_dir"
-
-			pushd "$src_dir"
-				for src in "${sources[@]}"
-				do
-					if [[ "$src" =~ .*\.tar.* ]]
-					then
-						echo "Extracting $src..."
-						tar "$TAR_SRC_XFLAGS" "$src"
-					fi
-				done
-			popd
-		else
-			mkdir -p "$src_dir"
-		fi
+		cp -a . "$src_dir"
 
 		pushd "$src_dir"
+			for src in "${sources[@]}"
+			do
+				if [[ "$src" =~ ^([^:]*\.(tar|tgz)[^:]*)(:(.*))?$ ]]
+				then
+					src="${BASH_REMATCH[1]}"
+					dst="${BASH_REMATCH[4]}"
+
+					if [ -z "$dst" ]
+					then
+						echo "Extracting $src..."
+						tar "${TAR_SRC_XFLAGS[@]}" -f "$src"
+					else
+
+						echo "Extracting $src to $dst..."
+
+						mkdir -p "./$dst"
+						pushd "./$dst"
+							tar --strip-components=1 \
+								"${TAR_SRC_XFLAGS[@]}" -f "$src"
+						popd
+					fi
+				fi
+			done
+
 			pkg_run prepare
 		popd
 	popd
 }
 
+# Link an installed package to it's current version
 pkg_link() # name version
 {
 	local name="$1"
@@ -381,11 +447,14 @@ pkg_link() # name version
 	local data_dir="$PKG_DATA/$name" cache_dir="$PKG_CACHE/$name"
 	local archive="pkg$TAR_PKG_EXT"
 
-	ln -sfv "$data_dir/$version/$name.pkg" "$data_dir/$name.pkg"
-	ln -sfv "$cache_dir/$version/$archive" "$cache_dir/$archive"
-	ln -sfv "$cache_dir/$version/$archive.md5" "$cache_dir/$archive.md5"
+	mkdir -vp "$data_dir" "$cache_dir"
+
+	ln -sfv "$version/$name.pkg" "$data_dir/$name.pkg"
+	ln -sfv "$version/$archive" "$cache_dir/$archive"
+	ln -sfv "$version/$archive.md5" "$cache_dir/$archive.md5"
 }
 
+# Build given packages
 pkg_build() # [pkg]...
 {
 	local "${PKG_VARS[@]}"
@@ -405,49 +474,51 @@ pkg_build() # [pkg]...
 
 			archive="$cache_dir/pkg$TAR_PKG_EXT"
 
-			if pkg_built "$pkg"
+			# Check if this specific version is already built
+			if ! pkg_built_version "$pkg" "$version"
 			then
-				echo "$name has already been built!"
+				pkg_prepare "$src_dir"
 
-				pkg_link "$name" "$version"
-				continue
-			fi
+				pushd "$build_dir"
+					echo "Building $pkg_file..."
 
-			pkg_prepare "$src_dir"
+					# shellcheck disable=SC2034
+					DESTDIR="$build_dir" USRLIBDIR="/usr/lib" USRBINDIR="/usr/bin"
+					# TODO: Make constants read-only
 
-			pushd "$build_dir"
-				echo "Building $pkg_file..."
+					pkg_run build
 
-				export DESTDIR="$build_dir"
-				export USRLIBDIR="/usr/lib" USRBINDIR="/usr/bin"
-				# TODO: Make some constants read-only
+					if [ -d "$src_dir" ]
+					then
+						echo "Removing source directory..."
+						rm -rf "$src_dir"
+					fi
+				popd
 
-				pkg_run build
+				echo "Packaging $pkg_file..."
+				pkg_archive "$archive" "$build_dir"
 
-				if [ -d "$src_dir" ]
+				if [ -d "$build_dir" ]
 				then
-					echo "Removing source directory..."
-					rm -rf "$src_dir"
+					echo "Removing build directory..."
+					rm -rf "$build_dir"
 				fi
-			popd
-
-			echo "Packaging $pkg_file..."
-			pkg_archive "$archive" "$build_dir"
-
-			if [ -d "$build_dir" ]
-			then
-				echo "Removing build directory..."
-				rm -rf "$build_dir"
+			else
+				echo "$name has already been built!"
 			fi
 
-			echo "Storing $pkg_file..."
-			install -D "$pkg_dir/$pkg_file" "$data_dir/$pkg_file"
+			if ! diff "$pkg_dir/$pkg_file" "$data_dir/$pkg_file" >/dev/null 2>&1
+			then
+				echo "Storing $pkg_file..."
+				install -vD -m644 "$pkg_dir/$pkg_file" "$data_dir/$pkg_file"
+			fi
 
 			pkg_link "$name" "$version"
 		popd; pkg_unload
 	done
 }
 
+# Check if given packages are installed
 pkg_installed() # [pkg]...
 {
 	local pkg
@@ -458,6 +529,7 @@ pkg_installed() # [pkg]...
 	done
 }
 
+# Check if given packages have been built
 pkg_built() # [pkg]...
 {
 	local pkg pkg_archive
@@ -480,7 +552,31 @@ pkg_built() # [pkg]...
 	done
 }
 
-pkg_assert_installed() # pkg
+# Check if a specific version of a given package has been built
+pkg_built_version() # pkg version
+{
+	local pkg="$1"
+	local version="$2"
+
+	local pkg_archive
+
+	pkg_archive="$PKG_CACHE/$pkg/$version/pkg$TAR_PKG_EXT"
+
+	if [ -f "$pkg_archive" ]
+	then
+		if ! md5sum --quiet --check "$pkg_archive.md5"
+		then
+			echo "warning: removing corrupt archive $pkg_archive!"
+			rm "$pkg_archive"
+			return 1
+		fi
+	else
+		return 1
+	fi
+}
+
+# Assert that the given packages have been installed
+pkg_assert_installed() # [pkg...]
 {
 	local pkg
 
@@ -490,6 +586,7 @@ pkg_assert_installed() # pkg
 	done
 }
 
+# Assert that the given packages have been built
 pkg_assert_built() # [pkg]...
 {
 	local pkg
@@ -500,7 +597,7 @@ pkg_assert_built() # [pkg]...
 	done
 }
 
-
+# List a package's files
 pkg_files() # pkg
 {
 	local pkg="${1%.pkg}"
@@ -508,17 +605,22 @@ pkg_files() # pkg
 	grep "$PKG_DATA/$pkg/files" -e '[^/]$'
 }
 
+# List a package's directories
 pkg_dirs() # pkg
 {
 	local pkg="${1%.pkg}"
 
-	grep "$PKG_DATA/$pkg/files" -v -e '[^/]$'
+	grep "$PKG_DATA/$pkg/files" -v -e '[^/]$' \
+	| sort -r
 }
 
+# Uninstall the given packages
 pkg_uninstall() # [pkg]...
 {
 	local pkg
 	local pkg_files
+
+	local file directory
 
 	local "${PKG_VARS[@]}"
 
@@ -540,14 +642,23 @@ pkg_uninstall() # [pkg]...
 				pkg_run pre_uninstall
 
 				pkg_files "$pkg" \
-				| xargs --delimiter=$'\n' \
-					rm -f
+				| while read -r file
+				do
+					rm -f -- "$file"
+				done
 
 				pkg_dirs "$pkg" \
-				| xargs --delimiter=$'\n' \
-					rmdir --ignore-fail-on-non-empty
+				| while read -r directory
+				do
+					directory="${directory%/}"
 
-				rm "$pkg_files"
+					if [ -d "$directory" ] && ! [ -h "$directory" ]
+					then
+						rmdir --ignore-fail-on-non-empty -- "$directory"
+					fi
+				done
+
+				rm -- "$pkg_files"
 
 				pkg_run post_uninstall
 
@@ -560,6 +671,7 @@ pkg_uninstall() # [pkg]...
 	done
 }
 
+# Install the given packages
 pkg_install() # [pkg]...
 {
 	local pkg pkg_archive
@@ -578,6 +690,7 @@ pkg_install() # [pkg]...
 		pkg_assert_built "$pkg"
 
 		pkg_load "$pkg_file"
+			echo "Installing $pkg..."
 
 			pkg_run pre_install
 
@@ -591,6 +704,7 @@ pkg_install() # [pkg]...
 	done
 }
 
+# List the installed packages
 pkg_list()
 {
 	local data_dir
@@ -604,6 +718,7 @@ pkg_list()
 	done
 }
 
+# List the given packages's files
 pkg_list_files() # [pkg]...
 {
 	local pkg
@@ -618,7 +733,26 @@ pkg_list_files() # [pkg]...
 	done
 }
 
+# List the given packages's versions
+pkg_version() # [pkg]...
+{
+	local pkg
+	local data_dir
 
+	for pkg in "$@"
+	do
+		pkg="${pkg%.pkg}"; shift
+		data_dir="$PKG_DATA/$pkg"
+
+		pkg_assert_installed "$pkg"
+
+		pkg_load "$data_dir/$pkg.pkg"
+			echo "$version"
+		pkg_unload
+	done
+}
+
+# Parse action
 action="${1:-}"
 [ $# -gt 0 ] && shift
 
@@ -628,6 +762,7 @@ case "$action" in
 	uninstall)	pkg_uninstall "$@";;
 	list)		pkg_list;;
 	files)		pkg_list_files "$@";;
+	version)	pkg_version "$@";;
 	help)		print_usage;;
 	*)			print_usage; exit 1;;
 esac

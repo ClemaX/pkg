@@ -3,16 +3,19 @@
 # shellcheck disable=SC2034
 
 name="pkg"
-version="0.2"
+version="0.3"
 
-tag="v$version"
+ref="v$version"
 
-source_base="$name-$tag"
+source_base="$name-$ref"
 
-sources=("https://github.com/ClemaX/$name.git:$tag")
+sources=("https://github.com/ClemaX/$name.git:$ref")
 
 build()
 {
 	install -d "./var/lib/pkg" "./var/cache/pkg"
-	install -Dm 755 "$SRCDIR/$source_base/pkg.sh" "./$USRBINDIR/pkg"
+
+	pushd "$SRCDIR/$source_base" || return
+		install -vD -m755 pkg.sh "$DESTDIR/$USRBINDIR/pkg"
+	popd || return
 }
