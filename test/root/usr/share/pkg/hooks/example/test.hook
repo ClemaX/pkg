@@ -1,0 +1,7 @@
+# vim: filetype=sh
+# shellcheck shell=bash
+# shellcheck disable=SC2034
+
+hook_build() {
+    touch hook-file
+}

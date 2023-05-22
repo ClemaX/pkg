@@ -13,7 +13,7 @@ sources=("https://github.com/ClemaX/$name.git:$ref")
 
 build()
 {
-	install -d "./var/lib/pkg" "./var/cache/pkg"
+	install -d "./var/lib/pkg" "./var/cache/pkg" "./usr/share/pkg"
 
 	pushd "$SRCDIR/$source_base" || return
 		install -vD -m755 pkg.sh "$DESTDIR/$USRBINDIR/pkg"

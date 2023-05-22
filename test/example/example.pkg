@@ -1,0 +1,13 @@
+# vim: filetype=sh
+# shellcheck shell=bash
+# shellcheck disable=SC2034
+
+name="example"
+version="0.1"
+
+sources=()
+
+build()
+{
+    touch package-file
+}

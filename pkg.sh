@@ -16,7 +16,13 @@ export MAKEFLAGS="${MAKEFLAGS:--j$NPROC}"
 export XZ_OPT="${XZ_OPT:--T${NPROC:-0} -6}"
 
 # Temporary variables for build script interaction
-PKG_VARS=(pkg_dir pkg_file name version sources md5sums cache_dir data_dir)
+PKG_VARS=(
+	pkg_dir pkg_file name version sources md5sums cache_dir data_dir build_prefix
+	pkg_hooks
+)
+PKG_HOOK_VARS=(
+	hook_file hook_name
+)
 
 # Temporary interface functions
 PKG_BUILD_FUNS=(prepare build)
@@ -27,12 +33,17 @@ PKG_FUNS=(
 	"${PKG_INSTALL_FUNS[@]}"
 	"${PKG_UNINSTALL_FUNS[@]}"
 )
+PKG_HOOK_FUNS=(
+	"${PKG_BUILD_FUNS[@]/#/hook_}"
+)
 
 # Target root directory
 ROOT="${ROOT:-/}"
 
 # Package management database directory
 PKG_DATA="$ROOT/var/lib/pkg"
+# Package hook directory
+PKG_SHARE="$ROOT/usr/share/pkg"
 # Package cache directory
 PKG_CACHE="$ROOT/var/cache/pkg"
 
@@ -78,6 +89,7 @@ Where action is one of:
 pkg_init()
 {
 	mkdir -vp "$PKG_DATA"
+	mkdir -vp "$PKG_SHARE"
 	mkdir -vp "$PKG_CACHE"
 }
 
@@ -136,34 +148,52 @@ pkg_assert_fun() # pkg_file [name]...
 	done
 }
 
-# Run a given function
-pkg_run() # pkg_fun
+# Run a given function and existing hooks
+pkg_run() # [pkg_fun]...
 {
-	local log
+	local log_file
+	local hook_name
 
 	for pkg_fun in "$@"
 	do
 		if pkg_has_fun "$pkg_fun"
 		then
-			log=$(mktemp "$PKG_TMP/$name-$version.XXXX.$pkg_fun.log")
+			log_file="$PKG_TMP/$build_prefix.$pkg_fun.log"
 
 			echo "Running $pkg_fun..."
 
 			set +e
-				(set -eu; "$pkg_fun") > "$log" 2>&1
+				(set -eu; "$pkg_fun") > "$log_file" 2>&1
 				err="$?"
 			set -e
 
 			if  [ "$err" -eq 0 ]
 			then
-				rm "$log"
+				rm "$log_file"
 			else
-				[ -t 1 ] && [ -n "$PAGER" ] && "$PAGER" "$log"
-				fatal "Could not run $pkg_fun! See $log for more details."
+				[ -t 1 ] && [ -n "$PAGER" ] && "$PAGER" "$log_file"
+				fatal "Could not run '$pkg_fun'! See '$log_file' for more details."
 			fi
 
 			unset -f "$pkg_fun"
 		fi
+
+		for hook in "${pkg_hooks[@]}"
+		do
+			pkg_hook_load "$hook"
+				if pkg_has_fun "hook_$pkg_fun"
+				then
+					log_file="$PKG_TMP/$build_prefix.$hook_name.$pkg_fun.log"
+
+					echo "Running '$hook_name.$pkg_fun'..."
+
+					set +e
+						(set -eu; "hook_$pkg_fun") > "$log_file" 2>&1
+						err="$?"
+					set -e
+				fi
+			pkg_hook_unload
+		done
 	done
 }
 
@@ -312,9 +342,13 @@ pkg_archive_files() # archive_path [root]
 # Load a package script
 #
 # Assigns pkg_dir pkg_file name version sources md5sums cache_dir data_dir
+# Assigns build_prefix to a filename prefix to use for log files and build dirs
+# Assigns pkg_hooks to an array of hook files matching this package
 pkg_load() # pkg_file
 {
 	pkg_file="$1"
+
+	local hook_dir
 
 	if [ -d "$pkg_file" ]
 	then
@@ -348,14 +382,50 @@ pkg_load() # pkg_file
 
 	cache_dir="$PKG_CACHE/$name/$version"
 	data_dir="$PKG_DATA/$name/$version"
+	
+	hook_dir="$PKG_SHARE/hooks/$name"
+
+	build_prefix=$(mktemp --dry-run "$name-$version.XXXX")
+
+	if [ -d "$hook_dir" ]
+	then
+		shopt -s nullglob
+			pkg_hooks=("$hook_dir/"*.hook)
+		shopt -u nullglob
+	else
+		pkg_hooks=()
+	fi
 }
 
-# Unloads a package script
+# Unload a package script
 pkg_unload()
 {
 	unset "${PKG_VARS[@]}"
 
 	unset -f "${PKG_FUNS[@]}" 2>/dev/null || :
+}
+
+# Load a hook script
+# Assigns hook_file hook_name
+pkg_hook_load() # hook_file
+{
+	hook_file="$1"
+
+	[ -f "$hook_file" ] || fatal "missing $hook_file!"
+
+	hook_name="${hook_file##*/}"
+	hook_name="${hook_name%.hook}"
+
+	# shellcheck source=/dev/null
+	source "$hook_file"
+}
+
+# Unload a hook script
+pkg_hook_unload()
+{
+	unset "${PKG_HOOK_VARS[@]}"
+
+	unset -f "${PKG_HOOK_FUNS[@]}" 2>/dev/null || :
 }
 
 # Prepare a package for building
@@ -469,8 +539,10 @@ pkg_build() # [pkg]...
 		pkg_load "$pkg"; shift; pushd "$pkg_dir"
 			echo "Loading $pkg_file..."
 
-			src_dir=$(mktemp -d "$PKG_TMP/$name-$version.XXXX.source")
-			build_dir=$(mktemp -d "$PKG_TMP/$name-$version.XXXX.build")
+			src_dir="$PKG_TMP/$build_prefix.source"
+			build_dir="$PKG_TMP/$build_prefix.build"
+
+			mkdir -vp "$src_dir" "$build_dir"
 
 			archive="$cache_dir/pkg$TAR_PKG_EXT"
 
@@ -480,7 +552,7 @@ pkg_build() # [pkg]...
 				pkg_prepare "$src_dir"
 
 				pushd "$build_dir"
-					echo "Building $pkg_file..."
+					echo "Building $name..."
 
 					# shellcheck disable=SC2034
 					DESTDIR="$build_dir" USRLIBDIR="/usr/lib" USRBINDIR="/usr/bin"
@@ -495,7 +567,7 @@ pkg_build() # [pkg]...
 					fi
 				popd
 
-				echo "Packaging $pkg_file..."
+				echo "Packaging $name..."
 				pkg_archive "$archive" "$build_dir"
 
 				if [ -d "$build_dir" ]
